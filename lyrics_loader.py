@@ -11,13 +11,15 @@ per file into a LYRICS table:
 LRCLIB is the song's LRCLIB id, taken from the file's header:
 
     # Ariana Gaga - no applause left to cry
+    # Genre: pop
     # Album: a superkill bye for now (swt studio)
     # Source: LRCLIB #7887516
 
-Files without that id line are skipped. The other fields come from the header
-when present, with fallbacks to the directory layout (genre = first folder
-under the root, artist = second folder) and the file name (song name).
-FULL_LYRICS stores the complete file contents, header included.
+Files without that id line are skipped. GENRE comes from the header's
+'# Genre:' line; files without it fall back to the first folder under the
+root. Artist and song name also come from the header when present, with
+fallbacks to the second folder and the file name. FULL_LYRICS stores the
+complete file contents, header included.
 
 Rows are upserted by LRCLIB id, so re-running refreshes instead of duplicating.
 An existing database with the old schema (no LRCLIB column) is migrated in
@@ -60,9 +62,9 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def parse_header(text: str) -> tuple[str, str, str, int | None]:
-    """(artist, album, song, lrclib_id) from the leading '# …' header lines; ''/None when absent."""
-    artist = album = song = ""
+def parse_header(text: str) -> tuple[str, str, str, int | None, str]:
+    """(artist, album, song, lrclib_id, genre) from the leading '# …' header lines; ''/None when absent."""
+    artist = album = song = genre = ""
     lrclib = None
     for line in text.splitlines():
         line = line.strip()
@@ -72,6 +74,8 @@ def parse_header(text: str) -> tuple[str, str, str, int | None]:
         low = body.lower()
         if low.startswith("album:"):
             album = body[len("album:"):].strip()
+        elif low.startswith("genre:"):
+            genre = body[len("genre:"):].strip()
         elif low.startswith("source:"):
             m = _LRCLIB_ID.search(body)
             if m:
@@ -80,17 +84,17 @@ def parse_header(text: str) -> tuple[str, str, str, int | None]:
             artist, song = (part.strip() for part in body.split(" - ", 1))
     if album == "-":  # harvester writes '-' when the album is unknown
         album = ""
-    return artist, album, song, lrclib
+    return artist, album, song, lrclib, genre
 
 
 def row_for(path: Path, root: Path, text: str) -> tuple[int | None, str, str, str, str, str]:
     parts = path.relative_to(root).parts
-    genre = parts[0] if len(parts) > 1 else ""
+    dir_genre = parts[0] if len(parts) > 1 else ""
     dir_artist = parts[1] if len(parts) > 2 else ""
-    artist, album, song, lrclib = parse_header(text)
+    artist, album, song, lrclib, genre = parse_header(text)
     return (
         lrclib,
-        genre,
+        genre or dir_genre,
         artist or dir_artist,
         album,
         song or path.stem,

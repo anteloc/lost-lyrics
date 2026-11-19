@@ -8,7 +8,9 @@ the same database by their LRCLIB primary key and prints LRCLIB / GENRE /
 ARTIST / ALBUM / SONG_NAME plus the relevance score in percent. FULL_LYRICS
 is included only with --full-lyrics. Results scored below --min-score
 (percent units, default 50) are dropped. Output is text by default, or JSON
-with --json.
+with --json. Without -V/--verbose only the results are printed; progress and
+filtering info appear on stderr when it is set (warnings and errors always
+show).
 
 Quick start
 -----------
@@ -37,11 +39,13 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def rerank(db: Path, query: str, top: int) -> list[dict]:
+def rerank(db: Path, query: str, top: int, verbose: bool) -> list[dict]:
     cmd = ["jev-rerank", "--db", str(db), "--table-field", "LYRICS.FULL_LYRICS",
            "--top", str(top), "--query", query, "--show", "--json"]
+    if not verbose:
+        cmd.append("--quiet")  # hide progress; jev-rerank still reports warnings on stderr
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)  # stderr (progress) passes through
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)  # stderr passes through
     except FileNotFoundError:
         sys.exit("jev-rerank not found on PATH; install it first, e.g.  uv tool install jev-rerank")
     if proc.returncode != 0:
@@ -112,6 +116,8 @@ def main(argv=None) -> int:
                    help="drop results whose relevance score is below this value in percent (0-100)")
     p.add_argument("--full-lyrics", action="store_true", help="include FULL_LYRICS in the output")
     p.add_argument("--json", action="store_true", help="output JSON instead of text")
+    p.add_argument("-V", "--verbose", action="store_true",
+                   help="show progress and filtering info on stderr (default: results only)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = p.parse_args(argv)
 
@@ -123,16 +129,16 @@ def main(argv=None) -> int:
     if not 0 <= args.min_score <= 100:
         p.error("--min-score must be between 0 and 100 (percent units, e.g. 50)")
 
-    results = rerank(db, args.query, args.top)
+    results = rerank(db, args.query, args.top, args.verbose)
     threshold = args.min_score / 100  # jev-rerank scores are probabilities in [0, 1]
     kept = [r for r in results if r["score"] >= threshold]
-    if len(kept) < len(results):
+    if args.verbose and len(kept) < len(results):
         log(f"Filtered out {len(results) - len(kept)} of {len(results)} results below min score {args.min_score:g}")
     rows = fetch_rows(db, kept)
     if args.json:
         print(json.dumps([record(r, args.full_lyrics) for r in rows], ensure_ascii=False, indent=2))
     else:
-        if not rows:
+        if args.verbose and not rows:
             log("No results.")
         print_text(rows, args.full_lyrics)
     return 0

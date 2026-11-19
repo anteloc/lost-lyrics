@@ -588,6 +588,7 @@ def harvest(args) -> int:
             body = plain + "\n"
             if args.header:
                 body = (f"# {artist_name} - {rec.get('trackName') or t.query_title}\n"
+                        f"# Genre: {args.genre}\n"
                         f"# Album: {rec.get('albumName') or '-'}\n# Source: LRCLIB #{lid}\n\n") + body
             path.write_text(body, encoding="utf-8")
             if args.synced and synced:
@@ -632,7 +633,7 @@ def main(argv=None) -> int:
     p.add_argument("--loose", action="store_true",
                    help="MusicBrainz: accept every artist the tag search returns, even without positive genre votes")
     p.add_argument("--synced", action="store_true", help="also save time-synced .lrc files when available")
-    p.add_argument("--header", action="store_true", help="put artist/album/source lines at the top of each .txt")
+    p.add_argument("--header", action="store_true", help="put artist/genre/album/source lines at the top of each .txt")
     p.add_argument("--retry-missing", action="store_true", help="retry songs that had no lyrics in earlier runs")
     p.add_argument("--contact", help="your email or homepage, sent in the User-Agent (recommended by the APIs)")
     p.add_argument("--lrclib-delay", type=float, default=0.7,
