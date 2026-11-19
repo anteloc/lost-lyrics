@@ -4,15 +4,17 @@ lyrics_search.py - semantic search over the lyrics database via jev-rerank.
 
 Runs the globally installed `jev-rerank` tool (BM25 shortlist + TypeSafe Jev
 re-ranking) over LYRICS.FULL_LYRICS, then fetches the matched rows back from
-the same database and prints GENRE / ARTIST / ALBUM / SONG_NAME. FULL_LYRICS
-is included only with --full-lyrics. Output is text by default, or JSON with
---json.
+the same database by their LRCLIB primary key and prints LRCLIB / GENRE /
+ARTIST / ALBUM / SONG_NAME plus the relevance score in percent. FULL_LYRICS
+is included only with --full-lyrics. Results scored below --min-score
+(percent units, default 50) are dropped. Output is text by default, or JSON
+with --json.
 
 Quick start
 -----------
     uv run lyrics_search.py lost-lyrics.db 'a song about eating something sweet'
     uv run lyrics_search.py lost-lyrics.db 'a song about heartbreak' -n 5 --json
-    uv run lyrics_search.py lost-lyrics.db 'a song about the rain' --full-lyrics
+    uv run lyrics_search.py lost-lyrics.db 'a song about the rain' --full-lyrics --min-score 40
 
 Needs `jev-rerank` on PATH and, for its default hosted backend, TYPESAFE_API_KEY.
 """
@@ -28,7 +30,7 @@ from pathlib import Path
 
 __version__ = "1.0.0"
 
-FIELDS = ("GENRE", "ARTIST", "ALBUM", "SONG_NAME", "FULL_LYRICS")
+FIELDS = ("LRCLIB", "GENRE", "ARTIST", "ALBUM", "SONG_NAME", "FULL_LYRICS")
 
 
 def log(msg: str) -> None:
@@ -70,15 +72,16 @@ def fetch_rows(db: Path, results: list[dict]) -> list[dict]:
             if row is None:
                 log(f"   ⚠ rank {res.get('rank')}: row {key} no longer in LYRICS, skipping")
                 continue
-            rows.append(dict(zip(FIELDS, row)))
+            rows.append(dict(zip(FIELDS, row), SCORE=res["score"]))
     finally:
         con.close()
     return rows
 
 
 def record(row: dict, full_lyrics: bool) -> dict:
-    out = {"genre": row["GENRE"], "artist": row["ARTIST"],
-           "album": row["ALBUM"], "song_name": row["SONG_NAME"]}
+    out = {"lrclib": row["LRCLIB"], "genre": row["GENRE"], "artist": row["ARTIST"],
+           "album": row["ALBUM"], "song_name": row["SONG_NAME"],
+           "score": round(row["SCORE"] * 100, 2)}  # percent, same units as --min-score
     if full_lyrics:
         out["full_lyrics"] = row["FULL_LYRICS"]
     return out
@@ -88,6 +91,8 @@ def print_text(rows: list[dict], full_lyrics: bool) -> None:
     for i, row in enumerate(rows, 1):
         print(f"{i}. [{row['GENRE']}] {row['ARTIST']} – {row['SONG_NAME']}")
         print(f"   Album: {row['ALBUM'] or '-'}")
+        print(f"   LRCLIB: {row['LRCLIB']}")
+        print(f"   Score: {round(row['SCORE'] * 100, 2):g}")
         if full_lyrics:
             print()
             print(row["FULL_LYRICS"].rstrip("\n"))
@@ -103,6 +108,8 @@ def main(argv=None) -> int:
     p.add_argument("db", help="lyrics SQLite database file (as built by lyrics_loader.py)")
     p.add_argument("query", help="what the best-matching songs should be about, in plain text")
     p.add_argument("-n", "--top", type=int, default=10, help="number of results to return")
+    p.add_argument("--min-score", type=float, default=50, metavar="PERCENT",
+                   help="drop results whose relevance score is below this value in percent (0-100)")
     p.add_argument("--full-lyrics", action="store_true", help="include FULL_LYRICS in the output")
     p.add_argument("--json", action="store_true", help="output JSON instead of text")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -113,8 +120,15 @@ def main(argv=None) -> int:
         p.error(f"database not found: {db}")
     if args.top < 1:
         p.error("--top must be at least 1")
+    if not 0 <= args.min_score <= 100:
+        p.error("--min-score must be between 0 and 100 (percent units, e.g. 50)")
 
-    rows = fetch_rows(db, rerank(db, args.query, args.top))
+    results = rerank(db, args.query, args.top)
+    threshold = args.min_score / 100  # jev-rerank scores are probabilities in [0, 1]
+    kept = [r for r in results if r["score"] >= threshold]
+    if len(kept) < len(results):
+        log(f"Filtered out {len(results) - len(kept)} of {len(results)} results below min score {args.min_score:g}")
+    rows = fetch_rows(db, kept)
     if args.json:
         print(json.dumps([record(r, args.full_lyrics) for r in rows], ensure_ascii=False, indent=2))
     else:
